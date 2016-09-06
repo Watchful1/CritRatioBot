@@ -15,6 +15,7 @@ import signal
 ### Config ###
 LOG_FOLDER_NAME = "logs"
 SUBREDDIT = "SeriousShortStories"
+BOT_NAME = "CritRatioBot"
 
 ### Logging setup ###
 LOG_LEVEL = logging.DEBUG
@@ -237,8 +238,8 @@ while True:
 			strList.append("\n\n*****\n\n")
 
 		footer = (
-			"|[^(All Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Summary&message=summary)"
-			"|[^(Individual Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Users&message="
+			"|[^(All Users)](http://np.reddit.com/message/compose/?to="+BOT_NAME+"&subject=Summary&message=summary)"
+			"|[^(Individual Users)](http://np.reddit.com/message/compose/?to="+BOT_NAME+"&subject=Users&message="
 				"List any number of users like /u/test1 /u/test2"
 				")"
 			"|[^(Feedback)](http://np.reddit.com/message/compose/?to=Watchful1&subject=CritRatioBot Feedback)"
