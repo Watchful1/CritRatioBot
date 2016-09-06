@@ -8,6 +8,9 @@ import sqlite3
 from datetime import datetime
 import re
 import traceback
+import sys
+import time
+import signal
 
 ### Config ###
 LOG_FOLDER_NAME = "logs"
@@ -32,6 +35,12 @@ if LOG_FILENAME is not None:
 	log_formatter_file = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 	log_fileHandler.setFormatter(log_formatter_file)
 	log.addHandler(log_fileHandler)
+
+
+def signal_handler(signal, frame):
+	log.info("Handling interupt")
+	dbConn.close()
+	sys.exit(0)
 
 
 ### Main ###
@@ -61,181 +70,192 @@ c.execute('''
 ''')
 dbConn.commit()
 
-loopStartTime = datetime.utcnow()
+signal.signal(signal.SIGINT, signal_handler)
 
-lastRunResult = c.execute('''
-	SELECT LastRun
-	FROM lastRun
-	WHERE ID = 1
-''').fetchone()
+once = False
+if len(sys.argv) > 1 and sys.argv[1] == 'once':
+	once = True
 
-lastRun = None
-if lastRunResult:
-	lastRun = datetime.strptime(lastRunResult[0], "%Y-%m-%d %H:%M:%S")
+while True:
+	loopStartTime = datetime.utcnow()
 
-for comment in r.get_subreddit(SUBREDDIT).get_comments(limit=1000):
-	if lastRun is not None and datetime.utcfromtimestamp(comment.created_utc) < lastRun: break
+	lastRunResult = c.execute('''
+		SELECT LastRun
+		FROM lastRun
+		WHERE ID = 1
+	''').fetchone()
 
-	if not comment.is_root:
-		log.debug("Skipping comment by /u/"+str(comment.author)+", not root")
-		continue
+	lastRun = None
+	if lastRunResult:
+		lastRun = datetime.strptime(lastRunResult[0], "%Y-%m-%d %H:%M:%S")
 
-	submission = comment.submission
-	if str(submission.author) == str(comment.author):
-		log.debug("Skipping comment by /u/"+str(comment.author)+", posted by thread author")
-		continue
+	for comment in r.get_subreddit(SUBREDDIT).get_comments(limit=1000):
+		if lastRun is not None and datetime.utcfromtimestamp(comment.created_utc) < lastRun: break
 
-	title = submission.title
-	numbers = re.findall('(\d[\d\,\.]{2,})', title)
+		if not comment.is_root:
+			log.debug("Skipping comment by /u/"+str(comment.author)+", not root")
+			continue
 
-	if len(numbers) == 0:
-		log.debug("Skipping comment by /u/"+str(comment.author)+", not in a story thread")
-		continue
+		submission = comment.submission
+		if str(submission.author) == str(comment.author):
+			log.debug("Skipping comment by /u/"+str(comment.author)+", posted by thread author")
+			continue
 
-	wordCount = int(numbers[0].replace('.', '').replace(',', ''))
+		title = submission.title
+		numbers = re.findall('(\d[\d\,\.]{2,})', title)
 
-	isSecondComment = False
-	for submissionComment in submission.comments:
-		if submissionComment == comment: continue
-		if not submissionComment.is_root: continue
+		if len(numbers) == 0:
+			log.debug("Skipping comment by /u/"+str(comment.author)+", not in a story thread")
+			continue
 
-		if str(submissionComment.author) == str(comment.author):
-			isSecondComment = True
-			break
+		wordCount = int(numbers[0].replace('.', '').replace(',', ''))
 
-	if isSecondComment:
-		log.debug("Skipping comment by /u/"+str(comment.author)+", second comment by commenter in thread")
-		continue
+		isSecondComment = False
+		for submissionComment in submission.comments:
+			if submissionComment == comment: continue
+			if not submissionComment.is_root: continue
 
-	previousWordCount = c.execute('''
-		SELECT CommentedWords
-		FROM users
-		WHERE User = ?
-	''', (str(comment.author).lower(),)).fetchone()
+			if str(submissionComment.author) == str(comment.author):
+				isSecondComment = True
+				break
 
-	log.info("Found comment by /u/" + str(comment.author) + ", story word count: "+str(wordCount)+" previous word count: "+(str(previousWordCount[0] if previousWordCount else "0")))
+		if isSecondComment:
+			log.debug("Skipping comment by /u/"+str(comment.author)+", second comment by commenter in thread")
+			continue
 
-	if previousWordCount:
-		c.execute('''
-			UPDATE users
-			SET CommentedWords = ?
+		previousWordCount = c.execute('''
+			SELECT CommentedWords
+			FROM users
 			WHERE User = ?
-		''', (previousWordCount[0]+wordCount, str(comment.author).lower()))
-	else:
-		c.execute('''
-			INSERT INTO users
-			(User, CommentedWords, PostedWords)
-			VALUES (?, ?, 0)
-		''', (str(comment.author).lower(), wordCount))
+		''', (str(comment.author).lower(),)).fetchone()
 
-for submission in r.get_subreddit(SUBREDDIT).get_new(limit=1000):
-	if lastRun is not None and datetime.utcfromtimestamp(submission.created_utc) < lastRun: break
+		log.info("Found comment by /u/" + str(comment.author) + ", story word count: "+str(wordCount)+" previous word count: "+(str(previousWordCount[0] if previousWordCount else "0")))
 
-	numbers = re.findall('(\d[\d\,\.]{2,})', submission.title)
+		if previousWordCount:
+			c.execute('''
+				UPDATE users
+				SET CommentedWords = ?
+				WHERE User = ?
+			''', (previousWordCount[0]+wordCount, str(comment.author).lower()))
+		else:
+			c.execute('''
+				INSERT INTO users
+				(User, CommentedWords, PostedWords)
+				VALUES (?, ?, 0)
+			''', (str(comment.author).lower(), wordCount))
 
-	if len(numbers) == 0:
-		log.debug("Skipping thread by /u/"+str(submission.author)+", not a story thread")
-		continue
+	for submission in r.get_subreddit(SUBREDDIT).get_new(limit=1000):
+		if lastRun is not None and datetime.utcfromtimestamp(submission.created_utc) < lastRun: break
 
-	wordCount = int(numbers[0].replace('.', '').replace(',', ''))
+		numbers = re.findall('(\d[\d\,\.]{2,})', submission.title)
 
-	previousWordCount = c.execute('''
-		SELECT PostedWords
-		FROM users
-		WHERE User = ?
-	''', (str(submission.author).lower(),)).fetchone()
+		if len(numbers) == 0:
+			log.debug("Skipping thread by /u/"+str(submission.author)+", not a story thread")
+			continue
 
-	log.info("Found thread by /u/" + str(submission.author) + ", story word count: "+str(wordCount)+" previous word count: "+(str(previousWordCount[0] if previousWordCount else "0")))
+		wordCount = int(numbers[0].replace('.', '').replace(',', ''))
 
-	if previousWordCount:
-		c.execute('''
-			UPDATE users
-			SET PostedWords = ?
+		previousWordCount = c.execute('''
+			SELECT PostedWords
+			FROM users
 			WHERE User = ?
-		''', (previousWordCount[0]+wordCount, str(submission.author).lower()))
+		''', (str(submission.author).lower(),)).fetchone()
+
+		log.info("Found thread by /u/" + str(submission.author) + ", story word count: "+str(wordCount)+" previous word count: "+(str(previousWordCount[0] if previousWordCount else "0")))
+
+		if previousWordCount:
+			c.execute('''
+				UPDATE users
+				SET PostedWords = ?
+				WHERE User = ?
+			''', (previousWordCount[0]+wordCount, str(submission.author).lower()))
+		else:
+			c.execute('''
+				INSERT INTO users
+				(User, CommentedWords, PostedWords)
+				VALUES (?, 0, ?)
+			''', (str(submission.author).lower(), wordCount))
+
+
+	if lastRun:
+		c.execute('''
+			UPDATE lastRun
+			SET LastRun = ?
+			WHERE ID = 0
+		''', (loopStartTime.strftime("%Y-%m-%d %H:%M:%S"),))
 	else:
 		c.execute('''
-			INSERT INTO users
-			(User, CommentedWords, PostedWords)
-			VALUES (?, 0, ?)
-		''', (str(submission.author).lower(), wordCount))
+			INSERT INTO lastRun
+			(ID, LastRun)
+			VALUES (1, ?)
+		''', (loopStartTime.strftime("%Y-%m-%d %H:%M:%S"),))
 
+	for message in r.get_unread(unset_has_mail=True, update_user=True, limit=100):
+		if not isinstance(message, praw.objects.Message): continue
 
-if lastRun:
-	c.execute('''
-		UPDATE lastRun
-		SET LastRun = ?
-		WHERE ID = 0
-	''', (loopStartTime.strftime("%Y-%m-%d %H:%M:%S"),))
-else:
-	c.execute('''
-		INSERT INTO lastRun
-		(ID, LastRun)
-		VALUES (1, ?)
-	''', (loopStartTime.strftime("%Y-%m-%d %H:%M:%S"),))
+		log.info("Parsing message from /u/" + str(message.author))
 
-for message in r.get_unread(unset_has_mail=True, update_user=True, limit=100):
-	if not isinstance(message, praw.objects.Message): continue
-
-	log.info("Parsing message from /u/" + str(message.author))
-
-	body = message.body.lower()
-	strList = ["User | Ratio | Commented Words | Posted Words \n-------|----|-----|-----\n"]
-	results = None
-	if body.startswith("summary"):
-		log.info("Replying with summary")
-		results = c.execute('''
-					SELECT User
-						,ROUND(CAST(CommentedWords AS FLOAT) / CAST(PostedWords AS FLOAT), 2) AS Ratio
-						,CommentedWords
-						,PostedWords
-					FROM users
-					ORDER BY Ratio DESC
-				''')
-
-	else:
-		users = re.findall('(?:/u/)(\w*)', body)
-		if len(users) != 0:
-			log.info("Found "+str(len(users))+" users")
+		body = message.body.lower()
+		strList = ["User | Ratio | Commented Words | Posted Words \n-------|----|-----|-----\n"]
+		results = None
+		if body.startswith("summary"):
+			log.info("Replying with summary")
 			results = c.execute('''
 						SELECT User
 							,ROUND(CAST(CommentedWords AS FLOAT) / CAST(PostedWords AS FLOAT), 2) AS Ratio
 							,CommentedWords
 							,PostedWords
 						FROM users
-						WHERE User in ({seq})
 						ORDER BY Ratio DESC
-					'''.format(seq=','.join(['?']*len(users))), users)
+					''')
 
-	if results is not None:
-		for user in results:
-			strList.append(user[0])
-			strList.append(" | ")
-			strList.append(str(user[1]))
-			strList.append(" | ")
-			strList.append(str(user[2]))
-			strList.append(" | ")
-			strList.append(str(user[3]))
-			strList.append("\n")
+		else:
+			users = re.findall('(?:/u/)(\w*)', body)
+			if len(users) != 0:
+				log.info("Found "+str(len(users))+" users")
+				results = c.execute('''
+							SELECT User
+								,ROUND(CAST(CommentedWords AS FLOAT) / CAST(PostedWords AS FLOAT), 2) AS Ratio
+								,CommentedWords
+								,PostedWords
+							FROM users
+							WHERE User in ({seq})
+							ORDER BY Ratio DESC
+						'''.format(seq=','.join(['?']*len(users))), users)
 
-		strList.append("\n\n*****\n\n")
+		if results is not None:
+			for user in results:
+				strList.append(user[0])
+				strList.append(" | ")
+				strList.append(str(user[1]))
+				strList.append(" | ")
+				strList.append(str(user[2]))
+				strList.append(" | ")
+				strList.append(str(user[3]))
+				strList.append("\n")
 
-	footer = (
-		"|[^(All Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Summary&message=summary)"
-		"|[^(Individual Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Users&message="
-			"List any number of users like /u/test1 /u/test2"
-			")"
-		"|[^(Feedback)](http://np.reddit.com/message/compose/?to=Watchful1&subject=CritRatioBot Feedback)"
-		"|[^(Code)](https://github.com/Watchful1/CritRatioBot)"
-		"\n|-|-|-|-|"
-	)
-	strList.append(footer)
-	try:
-		message.reply(''.join(strList))
-		message.mark_as_read()
-	except Exception as err:
-		log.warning("Exception sending confirmation message")
-		log.warning(traceback.format_exc())
+			strList.append("\n\n*****\n\n")
+
+		footer = (
+			"|[^(All Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Summary&message=summary)"
+			"|[^(Individual Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Users&message="
+				"List any number of users like /u/test1 /u/test2"
+				")"
+			"|[^(Feedback)](http://np.reddit.com/message/compose/?to=Watchful1&subject=CritRatioBot Feedback)"
+			"|[^(Code)](https://github.com/Watchful1/CritRatioBot)"
+			"\n|-|-|-|-|"
+		)
+		strList.append(footer)
+		try:
+			message.reply(''.join(strList))
+			message.mark_as_read()
+		except Exception as err:
+			log.warning("Exception sending confirmation message")
+			log.warning(traceback.format_exc())
+
+	if once:
+		break
+	time.sleep(5*60)
 
 
 
