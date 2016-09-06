@@ -7,6 +7,7 @@ import logging.handlers
 import sqlite3
 from datetime import datetime
 import re
+import traceback
 
 ### Config ###
 LOG_FOLDER_NAME = "logs"
@@ -172,6 +173,71 @@ else:
 		(ID, LastRun)
 		VALUES (1, ?)
 	''', (loopStartTime.strftime("%Y-%m-%d %H:%M:%S"),))
+
+for message in r.get_unread(unset_has_mail=True, update_user=True, limit=100):
+	if not isinstance(message, praw.objects.Message): continue
+
+	log.info("Parsing message from /u/" + str(message.author))
+
+	body = message.body.lower()
+	strList = ["User | Ratio | Commented Words | Posted Words \n-------|----|-----|-----\n"]
+	results = None
+	if body.startswith("summary"):
+		log.info("Replying with summary")
+		results = c.execute('''
+					SELECT User
+						,ROUND(CAST(CommentedWords AS FLOAT) / CAST(PostedWords AS FLOAT), 2) AS Ratio
+						,CommentedWords
+						,PostedWords
+					FROM users
+					ORDER BY Ratio DESC
+				''')
+
+	else:
+		users = re.findall('(?:/u/)(\w*)', body)
+		if len(users) != 0:
+			log.info("Found "+str(len(users))+" users")
+			results = c.execute('''
+						SELECT User
+							,ROUND(CAST(CommentedWords AS FLOAT) / CAST(PostedWords AS FLOAT), 2) AS Ratio
+							,CommentedWords
+							,PostedWords
+						FROM users
+						WHERE User in ({seq})
+						ORDER BY Ratio DESC
+					'''.format(seq=','.join(['?']*len(users))), users)
+
+	if results is not None:
+		for user in results:
+			strList.append(user[0])
+			strList.append(" | ")
+			strList.append(str(user[1]))
+			strList.append(" | ")
+			strList.append(str(user[2]))
+			strList.append(" | ")
+			strList.append(str(user[3]))
+			strList.append("\n")
+
+		strList.append("\n\n*****\n\n")
+
+	footer = (
+		"|[^(All Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Summary&message=summary)"
+		"|[^(Individual Users)](http://np.reddit.com/message/compose/?to=CritRatioBot&subject=Users&message="
+			"List any number of users like /u/test1 /u/test2"
+			")"
+		"|[^(Feedback)](http://np.reddit.com/message/compose/?to=Watchful1&subject=CritRatioBot Feedback)"
+		"|[^(Code)](https://github.com/Watchful1/CritRatioBot)"
+		"\n|-|-|-|-|"
+	)
+	strList.append(footer)
+	try:
+		message.reply(''.join(strList))
+		message.mark_as_read()
+	except Exception as err:
+		log.warning("Exception sending confirmation message")
+		log.warning(traceback.format_exc())
+
+
 
 dbConn.commit()
 dbConn.close()
