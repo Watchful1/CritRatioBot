@@ -79,6 +79,8 @@ if len(sys.argv) > 1 and sys.argv[1] == 'once':
 
 while True:
 	loopStartTime = datetime.utcnow()
+	startTime = time.perf_counter()
+	log.debug("Starting run")
 
 	lastRunResult = c.execute('''
 		SELECT LastRun
@@ -254,6 +256,7 @@ while True:
 			log.warning("Exception sending confirmation message")
 			log.warning(traceback.format_exc())
 
+	log.debug("Run complete after: %d", int(time.perf_counter() - startTime))
 	if once:
 		break
 	time.sleep(5*60)
